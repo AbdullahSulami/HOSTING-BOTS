@@ -106,7 +106,7 @@ class I18n:
                 'invalid_token': '❌ Invalid bot token. Please check and try again.',
                 'bot_already_exists': '❌ This bot is already registered in our system',
                 'no_bots': '📭 You don\'t have any bots yet. Use "Add Bot" to get started!',
-                'bot_stats_message': """📊 *Bot Statistics: {name}*
+                'bot_stats_message': """📊 <b>Bot Statistics: {name}</b>
 
 🤖 Username: @{username}
 📈 Total Updates: {updates}
@@ -162,7 +162,7 @@ class I18n:
                 'invalid_token': '❌ الرمز غير صحيح.',
                 'bot_already_exists': '❌ مسجل مسبقاً لدينا.',
                 'no_bots': '📭 لا يوجد لديك تطبيقات بعد.',
-                'bot_stats_message': """📊 *إحصائيات البوت: {name}*
+                'bot_stats_message': """📊 <b>إحصائيات البوت: {name}</b>
 
 🤖 المعرف: @{username}
 📈 إجمالي التحديثات: {updates}
@@ -177,7 +177,7 @@ class I18n:
                 'unauthorized': '⛔️ غير مصرح لك باستخدام هذا الأمر.',
                 
                 # Admin
-                'admin_panel_msg': '👑 *لوحة التحكم*',
+                'admin_panel_msg': '👑 <b>لوحة التحكم</b>',
                 'admin_panel_btn': '🔐 لوحة الإدارة',
                 # ...
 
@@ -412,11 +412,14 @@ class Database:
     async def add_bot(self, owner_telegram_id: int, bot_token: str, 
                       bot_name: str, bot_username: str, code_path: str = None) -> Tuple[bool, str]:
         async with self.connect() as db:
-            # ... (previous code) ...
             # Add bot
             await db.execute("""
                 INSERT INTO bots (owner_id, bot_token, bot_name, bot_username, code_path)
                 SELECT id, ?, ?, ?, ? FROM users WHERE telegram_id = ?
+                ON CONFLICT(bot_token) DO UPDATE SET
+                is_active = 1,
+                code_path = excluded.code_path,
+                bot_username = excluded.bot_username
             """, (bot_token, bot_name, bot_username, code_path, owner_telegram_id))
             await db.commit()
             return True, "SUCCESS"
@@ -734,11 +737,17 @@ class BotRegistry:
             process = info.get('process')
             if process:
                 logging.info(f"Terminating hosted bot process (PID: {process.pid})")
-                process.terminate()
                 try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
+                    process.terminate()
+                    import asyncio
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        process.kill()
+                except ProcessLookupError:
+                    pass
+                except Exception as e:
+                    logging.error(f"Error terminating process: {e}")
             
             # Close log file
             log_file = info.get('log_file')
@@ -889,7 +898,7 @@ async def process_stat_select(message: Message, db: Database):
                 updates=bot['total_updates'], messages=bot['total_messages'],
                 created=bot['created_at'][:10], status="✅ Active" if bot['is_active'] else "❌ Inactive"
             )
-            await message.answer(stats_text, parse_mode=ParseMode.MARKDOWN)
+            await message.answer(stats_text, parse_mode=ParseMode.HTML)
         else:
             logging.warning(f"Bot @{username} not found or inactive")
 
@@ -1239,7 +1248,10 @@ async def process_bot_code(message: Message, state: FSMContext, registry: BotReg
         logging.error(f"Could not send log to channel: {e}")
         
     # Send success message
-    await msg.delete()
+    try:
+        await msg.delete()
+    except Exception:
+        pass
     await message.answer(
         i18n.get('bot_added', lang, name="Bot", username=result),
         reply_markup=i18n.get_keyboard([['back']], lang)
@@ -1258,13 +1270,14 @@ async def cmd_my_bots(message: Message, db: Database, user_id: int = None):
         await message.answer(i18n.get('no_bots', lang))
         return
     
-    text = "📋 *Your Bots:*\n\n"
+    text = "📋 <b>Your Bots:</b>\n\n"
     for i, bot in enumerate(bots, 1):
-        text += f"{i}. 🤖 @{bot['bot_username']}\n"
-        text += f"   📊 Updates: {bot['total_updates']}\n"
-        text += f"   💬 Messages: {bot['total_messages']}\n\n"
+        username = bot.get('bot_username') or 'Unknown'
+        text += f"{i}. 🤖 @{username}\n"
+        text += f"   📊 Updates: {bot.get('total_updates', 0)}\n"
+        text += f"   💬 Messages: {bot.get('total_messages', 0)}\n\n"
     
-    await message.answer(text, parse_mode=ParseMode.MARKDOWN)
+    await message.answer(text, parse_mode=ParseMode.HTML)
 
 # Bot statistics
 async def cmd_bot_stats(message: Message, db: Database, user_id: int = None):
@@ -1344,7 +1357,7 @@ async def cmd_admin(message: Message, db: Database, user_id: int = None):
         ['back']
     ], lang)
     
-    await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+    await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 async def process_broadcast(message: Message, state: FSMContext, bot: Bot, db: Database):
     """Process broadcast message"""
@@ -1384,9 +1397,9 @@ async def cmd_help(message: Message, db: Database, user_id: int = None):
     lang = await db.get_language(user_id)
     
     help_text = """
-ℹ️ *Bot Hosting Platform Help*
+ℹ️ <b>Bot Hosting Platform Help</b>
 
-*Commands:*
+<b>Commands:</b>
 /addbot - Add a new bot
 /mybots - List your bots
 /stats - View bot statistics
@@ -1394,20 +1407,20 @@ async def cmd_help(message: Message, db: Database, user_id: int = None):
 /language - Change language
 /help - Show this help
 
-*How to add a bot:*
+<b>How to add a bot:</b>
 1. Get a token from @BotFather
 2. Use /addbot command
 3. Send the token
 4. Your bot is now hosted!
 
-*Limits:*
+<b>Limits:</b>
 - Max 3 bots per user
 - 5 actions per 10 seconds
 
 Need support? Contact @admin
     """
     
-    await message.answer(help_text, parse_mode=ParseMode.MARKDOWN)
+    await message.answer(help_text, parse_mode=ParseMode.HTML)
 
 # Cancel handler
 async def cmd_cancel(message: Message, state: FSMContext, db: Database):
@@ -1516,16 +1529,20 @@ async def on_startup(bot: Bot, dp: Dispatcher, db: Database, registry: BotRegist
         )
         bots = await cursor.fetchall()
     
-    for bot_data in bots:
-        try:
-            logging.info(f"Auto-loading hosted bot: @{bot_data['bot_username']}")
-            await registry.register(
-                token=bot_data['bot_token'], 
-                name=bot_data['bot_name'],
-                code_path=bot_data['code_path']
-            )
-        except Exception as e:
-            logging.error(f"Failed to auto-load bot {bot_data.get('bot_username')}: {e}")
+    async def load_bots():
+        for bot_data in bots:
+            try:
+                logging.info(f"Auto-loading hosted bot: @{bot_data['bot_username']}")
+                await registry.register(
+                    token=bot_data['bot_token'], 
+                    name=bot_data['bot_name'],
+                    code_path=bot_data['code_path']
+                )
+            except Exception as e:
+                logging.error(f"Failed to auto-load bot {bot_data.get('bot_username')}: {e}")
+                
+    # Run bot loading in the background to not block the server startup
+    asyncio.create_task(load_bots())
     
     logging.info(f"Loaded {len(bots)} hosted bots")
     
@@ -1582,6 +1599,7 @@ async def create_app():
     app.router.add_post(config.WEBHOOK_PATH, main_webhook)
     app.router.add_post(f"{config.HOSTED_WEBHOOK_PATH}/{{token}}", hosted_webhook)
     app.router.add_get(config.HEALTH_PATH, health_check)
+    app.router.add_get('/', health_check)
 
     async def site_proxy(request):
         token_id = request.match_info['token']
@@ -1626,11 +1644,11 @@ async def create_app():
 
 async def self_ping():
     """Keep the server alive on Render free tier"""
-    if not config.WEBHOOK_BASE_URL or "your-app" in config.WEBHOOK_BASE_URL:
-        return
-        
     import aiohttp
-    url = f"{config.WEBHOOK_BASE_URL}{config.HEALTH_PATH}"
+    
+    # Render provides RENDER_EXTERNAL_URL automatically
+    base_url = os.getenv("RENDER_EXTERNAL_URL", config.WEBHOOK_BASE_URL)
+    url = f"{base_url.rstrip('/')}{config.HEALTH_PATH}"
     logging.info(f"Starting self-ping task for {url}")
     
     while True:
@@ -1644,7 +1662,7 @@ async def self_ping():
         except Exception as e:
             logging.error(f"Self-ping error: {e}")
             
-        await asyncio.sleep(420)  # Ping every 7 minutes as requested
+        await asyncio.sleep(60)  # Ping every 1 minute to actively keep it awake
 
 async def cleanup_task():
     """Periodically clean logs and temporary files to save space"""
