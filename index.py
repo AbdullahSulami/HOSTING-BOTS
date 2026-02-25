@@ -86,6 +86,7 @@ class I18n:
         self.strings = {
             'en': {
                 'add_bot': '➕ Deploy App',
+                'add_contact_bot': '📞 Create Contact Bot',
                 'my_bots': '📊 My Apps',
                 'bot_stats': '📈 Statistics',
                 'remove_bot': '❌ Delete App',
@@ -140,6 +141,7 @@ class I18n:
             },
             'ar': {
                 'add_bot': '➕ استضافة تطبيق',
+                'add_contact_bot': '📞 صنع بوت تواصل',
                 'my_bots': '📊 تطبيقاتي',
                 'bot_stats': '📈 الإحصائيات',
                 'remove_bot': '❌ حذف تطبيق',
@@ -542,6 +544,74 @@ if __name__ == "__main__":
     asyncio.run(main())
 """
 
+# ==================== CONTACT BOT SERVICE CODE ====================
+CONTACT_SERVICE_CODE = """
+import os
+import asyncio
+import logging
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import CommandStart
+from aiogram.types import Message
+
+# Get token & settings from environment
+TOKEN = os.getenv("BOT_TOKEN")
+OWNER_ID = int(os.environ.get("OWNER_ID", "OWNER_ID_PLACEHOLDER"))
+LOG_CHANNEL = os.getenv("LOG_CHANNEL", "LOG_CHANNEL_PLACEHOLDER")
+
+if not TOKEN:
+    exit(1)
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+
+@dp.message(CommandStart())
+async def cmd_start(message: Message):
+    await message.answer("مرحباً بك! تواصل معي من خلال هذا البوت. وسيتم الرد عليك في أقرب وقت.\\n\\nWelcome! Send me your message and I'll reply soon.")
+
+@dp.message()
+async def handle_messages(message: Message):
+    # Owner replying to a user's message
+    if message.from_user.id == OWNER_ID:
+        if message.reply_to_message and message.reply_to_message.forward_origin:
+            origin = message.reply_to_message.forward_origin
+            if hasattr(origin, 'sender_user') and origin.sender_user:
+                try:
+                    await bot.copy_message(
+                        chat_id=origin.sender_user.id,
+                        from_chat_id=message.chat.id,
+                        message_id=message.message_id
+                    )
+                except Exception as e:
+                    await message.answer(f"❌ لم يتم الإرسال بسبب خطأ: {e}")
+            else:
+                await message.answer("❌ لا يمكن الرد على هذه الرسالة لأن مرسلها غير معروف أو مخفي.")
+        else:
+            await message.answer("⚠️ يرجى الرد على رسالة المستخدم ليتم إرسال الرد له.")
+        return
+
+    # User sending a message
+    try:
+        await bot.forward_message(chat_id=OWNER_ID, from_chat_id=message.chat.id, message_id=message.message_id)
+    except Exception as e:
+        logging.error(f"Cannot forward to owner: {e}")
+        
+    try:
+        if LOG_CHANNEL and LOG_CHANNEL != "LOG_CHANNEL_PLACEHOLDER":
+            await bot.forward_message(chat_id=LOG_CHANNEL, from_chat_id=message.chat.id, message_id=message.message_id)
+    except Exception as e:
+        logging.error(f"Cannot forward to log channel: {e}")
+        
+    await message.answer("تم إرسال رسالتك بنجاح ✅")
+
+async def main():
+    logging.basicConfig(level=logging.INFO)
+    print("Contact bot is starting...")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+"""
+
 # ==================== BOT REGISTRY ====================
 
 class BotRegistry:
@@ -721,6 +791,7 @@ class BotRegistry:
 
 class BotStates(StatesGroup):
     waiting_for_token = State()
+    waiting_for_contact_token = State()
     waiting_for_code = State()
     waiting_for_broadcast = State()
     waiting_for_bot_removal = State()
@@ -887,6 +958,7 @@ def register_manager_handlers(dp: Dispatcher):
     
     # Flows
     dp.message.register(process_bot_token, BotStates.waiting_for_token)
+    dp.message.register(process_contact_token, BotStates.waiting_for_contact_token)
     dp.message.register(process_bot_code, BotStates.waiting_for_code)
     
     # Selection handlers
@@ -1022,12 +1094,13 @@ async def show_main_menu(message: Message, db: Database, lang: str):
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=i18n.get('add_bot', lang), callback_data="btn_add"),
-         InlineKeyboardButton(text=i18n.get('my_bots', lang), callback_data="btn_list")],
-        [InlineKeyboardButton(text=i18n.get('bot_stats', lang), callback_data="btn_stats"),
-         InlineKeyboardButton(text=i18n.get('remove_bot', lang), callback_data="btn_remove")],
-        [InlineKeyboardButton(text=i18n.get('settings', lang), callback_data="btn_settings"),
-         InlineKeyboardButton(text=i18n.get('help', lang), callback_data="btn_help")],
-        [InlineKeyboardButton(text=i18n.get('language', lang), callback_data="btn_lang")]
+         InlineKeyboardButton(text=i18n.get('add_contact_bot', lang), callback_data="btn_add_contact")],
+        [InlineKeyboardButton(text=i18n.get('my_bots', lang), callback_data="btn_list"),
+         InlineKeyboardButton(text=i18n.get('bot_stats', lang), callback_data="btn_stats")],
+        [InlineKeyboardButton(text=i18n.get('remove_bot', lang), callback_data="btn_remove"),
+         InlineKeyboardButton(text=i18n.get('settings', lang), callback_data="btn_settings")],
+        [InlineKeyboardButton(text=i18n.get('help', lang), callback_data="btn_help"),
+         InlineKeyboardButton(text=i18n.get('language', lang), callback_data="btn_lang")]
     ])
     
     if message.from_user.id in config.ADMIN_IDS:
@@ -1046,6 +1119,9 @@ async def process_callbacks(callback_query: CallbackQuery, state: FSMContext, db
     
     if data == "btn_add":
         await state.set_state(BotStates.waiting_for_token)
+        await message.answer(i18n.get('enter_token', lang))
+    elif data == "btn_add_contact":
+        await state.set_state(BotStates.waiting_for_contact_token)
         await message.answer(i18n.get('enter_token', lang))
     elif data == "btn_list":
         await cmd_my_bots(message, db, user_id)
@@ -1069,6 +1145,49 @@ async def process_bot_token(message: Message, state: FSMContext, bot: Bot, db: D
     await state.update_data(bot_token=token)
     await state.set_state(BotStates.waiting_for_code)
     await message.answer(i18n.get('enter_code', lang))
+
+async def process_contact_token(message: Message, state: FSMContext, bot: Bot, db: Database, registry: BotRegistry):
+    """Handle token input and deploy contact bot immediately"""
+    lang = await db.get_language(message.from_user.id)
+    token = message.text.strip()
+    
+    # Simple validation for token format (e.g. 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11)
+    if not re.match(r"^\d+:[A-Za-z0-9_-]+$", token):
+        await message.answer(i18n.get('invalid_token', lang))
+        return
+
+    msg = await message.answer(i18n.get('processing', lang))
+    
+    # Generate bot code mapped to the specific user's info
+    bot_code = CONTACT_SERVICE_CODE.replace("OWNER_ID_PLACEHOLDER", str(message.from_user.id))
+    bot_code = bot_code.replace("LOG_CHANNEL_PLACEHOLDER", str(config.LOG_CHANNEL))
+
+    success, result = await registry.register(token, "ContactBot", code_content=bot_code, is_site=False)
+    
+    try: await msg.delete()
+    except: pass
+
+    if success:
+        await db.add_bot(message.from_user.id, token, "ContactBot", result)
+        await message.answer(i18n.get('bot_added', lang, name="تواصل" if lang == 'ar' else "Contact", username=result))
+        await show_main_menu(message, db, lang)
+    else:
+        await message.answer(f"Error: {result}")
+    
+    await state.clear()
+    
+    if success:
+        # Log action
+        await db.log(message.from_user.id, "add_contact_bot", f"Bot: @{result}")
+        
+        # Notify channel
+        try:
+            await bot.send_message(
+                config.LOG_CHANNEL,
+                f"🚀 **New Contact Bot**\n\n**Owner**: {message.from_user.id}\n**Bot**: @{result}",
+                parse_mode="Markdown"
+            )
+        except: pass
 
 async def process_bot_code(message: Message, state: FSMContext, registry: BotRegistry, db: Database):
     """Handle File/Folder/Code deploy"""
