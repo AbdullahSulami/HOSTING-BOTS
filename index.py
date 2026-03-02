@@ -182,11 +182,8 @@ class I18n:
                 # ...
 
                 # Service Strings
-                'service_welcome': 'مرحباً بك في بوت الخدمة! 🤖',
-                'quran': '📖 آيات قرآنية',
-                'videos': '🎥 روابط فيديوهات',
-                'service_help': 'هذا البوت يوفر آيات قرآنية وروابط فيديوهات.',
-                'no_content': '� لا يوجد محتوى متاح بعد.',
+                'service_welcome': 'مرحباً بك!',
+                'no_content': '📭 لا يوجد محتوى متاح بعد.',
                 
                 # ...
                 'enter_broadcast': '📝 أرسل الرسالة التي تريد إرسالها للجميع:',
@@ -330,27 +327,6 @@ class Database:
                 )
             """)
             
-            # Content table for service logic
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS service_content (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    type TEXT, -- 'video' or 'quran'
-                    content TEXT,
-                    description TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            
-            # Seed contents if empty
-            cursor = await db.execute("SELECT COUNT(*) FROM service_content")
-            if (await cursor.fetchone())[0] == 0:
-                seed_data = [
-                    ('quran', 'قُلْ هُوَ اللَّهُ أَحَدٌ', 'Surah Al-Ikhlas'),
-                    ('quran', 'إِنَّ مَعَ الْعُسْرِ يُسْرًا', 'Surah Ash-Sharh'),
-                    ('video', 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'Sample Video 1'),
-                ]
-                await db.executemany("INSERT INTO service_content (type, content, description) VALUES (?, ?, ?)", seed_data)
-                
             await db.commit()
     
     @asynccontextmanager
@@ -552,14 +528,18 @@ CONTACT_SERVICE_CODE = """
 import os
 import asyncio
 import logging
+import sys
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
 from aiogram.types import Message
 
+# Log to stdout to avoid [Error] prefix in main bot
+logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+
 # Get token & settings from environment
 TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = int(os.environ.get("OWNER_ID", "OWNER_ID_PLACEHOLDER"))
-LOG_CHANNEL = os.getenv("LOG_CHANNEL", "LOG_CHANNEL_PLACEHOLDER")
+OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
+LOG_CHANNEL = os.getenv("LOG_CHANNEL", "")
 
 if not TOKEN:
     exit(1)
@@ -594,20 +574,23 @@ async def handle_messages(message: Message):
 
     # User sending a message
     try:
+        me = await bot.get_me()
+        user_info = f"👤 **From**: {message.from_user.full_name} (`{message.from_user.id}`)"
+        if message.from_user.username: user_info += f" (@{message.from_user.username})"
+        
+        log_header = f"📩 **Incoming Message**\\n🤖 **Bot**: @{me.username}\\n{user_info}"
+        
+        if LOG_CHANNEL:
+            try:
+                await bot.send_message(chat_id=LOG_CHANNEL, text=log_header, parse_mode="Markdown")
+                await bot.forward_message(chat_id=LOG_CHANNEL, from_chat_id=message.chat.id, message_id=message.message_id)
+            except: pass
+            
         await bot.forward_message(chat_id=OWNER_ID, from_chat_id=message.chat.id, message_id=message.message_id)
     except Exception as e:
-        logging.error(f"Cannot forward to owner: {e}")
-        
-    try:
-        if LOG_CHANNEL and LOG_CHANNEL != "LOG_CHANNEL_PLACEHOLDER":
-            await bot.forward_message(chat_id=LOG_CHANNEL, from_chat_id=message.chat.id, message_id=message.message_id)
-    except Exception as e:
-        logging.error(f"Cannot forward to log channel: {e}")
-        
-    await message.answer("تم إرسال رسالتك بنجاح ✅")
+        logging.error(f"Forwarding error: {e}")
 
 async def main():
-    logging.basicConfig(level=logging.INFO)
     print("Contact bot is starting...")
     await dp.start_polling(bot)
 
@@ -653,7 +636,17 @@ class BotRegistry:
             runtime = sys.executable # Default python
 
             if not code_content and not code_path:
-                code_content = DEFAULT_SERVICE_CODE
+                # Try to find existing entry point for auto-loading
+                if os.path.exists(os.path.join(target_dir, "main.py")):
+                    entry_point = os.path.join(target_dir, "main.py")
+                elif os.path.exists(os.path.join(target_dir, "index.js")):
+                    entry_point = os.path.join(target_dir, "index.js")
+                    runtime = "node"
+                elif os.path.exists(os.path.join(target_dir, "package.json")):
+                    entry_point = target_dir
+                    runtime = "npm"
+                else:
+                    code_content = DEFAULT_SERVICE_CODE
 
             if code_content:
                 entry_point = os.path.join(target_dir, "main.py")
@@ -677,6 +670,30 @@ class BotRegistry:
                     shutil.copy(code_path, entry_point)
 
             if not entry_point: return False, "Could not find entry point"
+
+            # Install dependencies if present
+            try:
+                if os.path.exists(os.path.join(target_dir, "requirements.txt")):
+                    logging.info(f"Installing Python dependencies for {me_username}...")
+                    dep_proc = await asyncio.create_subprocess_exec(
+                        sys.executable, "-m", "pip", "install", "-r", "requirements.txt",
+                        cwd=target_dir,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    await dep_proc.wait() # Ensure they are installed before starting
+                
+                if os.path.exists(os.path.join(target_dir, "package.json")):
+                    logging.info(f"Installing Node dependencies for {me_username}...")
+                    dep_proc = await asyncio.create_subprocess_exec(
+                        "npm", "install",
+                        cwd=target_dir,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    await dep_proc.wait() # Ensure they are installed before starting
+            except Exception as e:
+                logging.error(f"Dependency installation error: {e}")
 
             # Allocate Port if site
             port = None
@@ -717,7 +734,7 @@ class BotRegistry:
                 except: pass
 
             asyncio.create_task(_log_stream(process.stdout, me_username))
-            asyncio.create_task(_log_stream(process.stderr, me_username + " Error"))
+            asyncio.create_task(_log_stream(process.stderr, me_username))
 
             self._bots[token] = {
                 'token': token, 'name': name, 'username': me_username,
@@ -885,8 +902,9 @@ class ChannelCheckMiddleware:
 
 # ==================== HANDLERS ====================
 
-async def process_stat_select(message: Message, db: Database):
-    username = message.text.replace("🤖 @", "").strip()
+async def process_stat_select(message: Message, db: Database, username: str = None):
+    if not username:
+        username = message.text.replace("🤖 @", "").strip()
     logging.info(f"Selected bot stats for @{username}")
     async with db.connect() as conn:
         cursor = await conn.execute("SELECT * FROM bots WHERE bot_username = ? AND is_active = 1", (username,))
@@ -996,65 +1014,7 @@ def register_manager_handlers(dp: Dispatcher):
 
 # ==================== HANDLERS (SERVICE) ====================
 
-async def cmd_service_start(message: Message, db: Database):
-    """Handle /start for service bots"""
-    user = await db.create_user(message.from_user.id, username=message.from_user.username, first_name=message.from_user.first_name)
-    lang = user['language']
-    
-    keyboard = i18n.get_keyboard([
-        ['quran', 'videos'],
-        ['help', 'language']
-    ], lang)
-    
-    await message.answer(i18n.get('service_welcome', lang), reply_markup=keyboard)
-
-async def cmd_quran(message: Message, db: Database):
-    """Send a random Quran verse"""
-    lang = await db.get_language(message.from_user.id)
-    # Get random content from database
-    async with db.connect() as conn:
-        cursor = await conn.execute("SELECT content FROM service_content WHERE type = 'quran' ORDER BY RANDOM() LIMIT 1")
-        row = await cursor.fetchone()
-        if row:
-            await message.answer(f"📖 {row['content']}")
-        else:
-            await message.answer(i18n.get('no_content', lang))
-
-async def cmd_videos(message: Message, db: Database):
-    """Send a random video link"""
-    lang = await db.get_language(message.from_user.id)
-    async with db.connect() as conn:
-        cursor = await conn.execute("SELECT content FROM service_content WHERE type = 'video' ORDER BY RANDOM() LIMIT 1")
-        row = await cursor.fetchone()
-        if row:
-            await message.answer(f"🎥 {row['content']}")
-        else:
-            await message.answer(i18n.get('no_content', lang))
-
-def register_service_handlers(dp: Dispatcher):
-    """Register service handlers for hosted bots"""
-    # Middleware
-    dp.message.middleware(RateLimitMiddleware(config.RATE_LIMIT_ACTIONS, config.RATE_LIMIT_WINDOW))
-    dp.message.middleware(ChannelCheckMiddleware())
-    
-    # Handlers
-    dp.message.register(cmd_service_start, CommandStart())
-    dp.message.register(cmd_quran, F.text.in_([i18n.get('quran', 'en'), i18n.get('quran', 'ar')]))
-    dp.message.register(cmd_videos, F.text.in_([i18n.get('videos', 'en'), i18n.get('videos', 'ar')]))
-    
-    # Reuse some common handlers
-    dp.message.register(cmd_language, Command("language"))
-    dp.message.register(process_lang_btn, F.text.regexp(r"(🇬🇧 English|🇸🇦 العربية)"))
-    async def service_help_handler(m: Message, db: Database):
-        lang = await db.get_language(m.from_user.id)
-        await m.answer(i18n.get('service_help', lang))
-    
-    dp.message.register(service_help_handler, F.text.in_([i18n.get('help', 'en'), i18n.get('help', 'ar')]))
-
-    @dp.errors()
-    async def service_error_handler(error_event):
-        logging.error(f"Service Bot Error: {error_event.exception}", exc_info=True)
-        return True
+    pass
 
 # Language handlers
 async def cmd_language(message: Message, bot: Bot, db: Database, user_id: int = None):
@@ -1144,6 +1104,9 @@ async def process_callbacks(callback_query: CallbackQuery, state: FSMContext, db
         await cmd_help(message, db, user_id)
     elif data == "btn_admin":
         await cmd_admin(message, db, user_id)
+    elif data.startswith("bot_info_"):
+        username = data.replace("bot_info_", "")
+        await process_stat_select(message, db, username)
     
     await callback_query.answer()
 
@@ -1270,14 +1233,14 @@ async def cmd_my_bots(message: Message, db: Database, user_id: int = None):
         await message.answer(i18n.get('no_bots', lang))
         return
     
-    text = "📋 <b>Your Bots:</b>\n\n"
-    for i, bot in enumerate(bots, 1):
-        username = bot.get('bot_username') or 'Unknown'
-        text += f"{i}. 🤖 @{username}\n"
-        text += f"   📊 Updates: {bot.get('total_updates', 0)}\n"
-        text += f"   💬 Messages: {bot.get('total_messages', 0)}\n\n"
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     
-    await message.answer(text, parse_mode=ParseMode.HTML)
+    buttons = []
+    for bot in bots:
+        buttons.append([InlineKeyboardButton(text=f"🤖 @{bot['bot_username']}", callback_data=f"bot_info_{bot['bot_username']}")])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await message.answer("📋 <b>Your Bots (Select to view info):</b>", reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 # Bot statistics
 async def cmd_bot_stats(message: Message, db: Database, user_id: int = None):
@@ -1296,11 +1259,6 @@ async def cmd_bot_stats(message: Message, db: Database, user_id: int = None):
         buttons.append([f"🤖 @{bot['bot_username']}"])
     buttons.append(['back'])
     
-    await message.answer(
-        i18n.get('select_bot', lang),
-        reply_markup=i18n.get_keyboard(buttons, lang)
-    )
-
     await message.answer(
         i18n.get('select_bot', lang),
         reply_markup=i18n.get_keyboard(buttons, lang)
@@ -1411,7 +1369,11 @@ async def cmd_help(message: Message, db: Database, user_id: int = None):
 1. Get a token from @BotFather
 2. Use /addbot command
 3. Send the token
-4. Your bot is now hosted!
+4. Send the token
+5. Send your code (File .py, .js, .zip) OR paste the code as text
+6. If sending a ZIP, ensure main.py or index.js is in the root.
+7. You can include requirements.txt or package.json for dependencies.
+8. Your bot is now hosted!
 
 <b>Limits:</b>
 - Max 3 bots per user
