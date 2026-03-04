@@ -529,17 +529,18 @@ import os
 import asyncio
 import logging
 import sys
+import re
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 # Log to stdout to avoid [Error] prefix in main bot
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
 # Get token & settings from environment
 TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
-LOG_CHANNEL = os.getenv("LOG_CHANNEL", "")
+OWNER_ID = int("OWNER_ID_PLACEHOLDER") if "OWNER_ID_PLACEHOLDER" != "OWNER_ID_PLACE" + "HOLDER" else 0
+LOG_CHANNEL = "LOG_CHANNEL_PLACEHOLDER" if "LOG_CHANNEL_PLACEHOLDER" != "LOG_CHANNEL_PLACE" + "HOLDER" else ""
 
 if not TOKEN:
     exit(1)
@@ -551,25 +552,50 @@ dp = Dispatcher()
 async def cmd_start(message: Message):
     await message.answer("مرحباً بك! تواصل معي من خلال هذا البوت. وسيتم الرد عليك في أقرب وقت.\\n\\nWelcome! Send me your message and I'll reply soon.")
 
+@dp.callback_query(F.data.startswith("rep_"))
+async def callback_reply(call: CallbackQuery):
+    if call.from_user.id != OWNER_ID:
+        await call.answer("❌ غير مصرح لك المرجو عدم الضغط.", show_alert=True)
+        return
+    user_id = call.data.split("_")[1]
+    await call.message.answer(
+        f"📝 أرسل رسالتك الآن للرد على المستخدم (`{user_id}`):\\n(يرجى الرد على هذه الرسالة عند الكتابة)", 
+        parse_mode="Markdown"
+    )
+    await call.answer()
+
 @dp.message()
 async def handle_messages(message: Message):
     # Owner replying to a user's message
     if message.from_user.id == OWNER_ID:
-        if message.reply_to_message and message.reply_to_message.forward_origin:
-            origin = message.reply_to_message.forward_origin
-            if hasattr(origin, 'sender_user') and origin.sender_user:
+        if message.reply_to_message:
+            user_id = None
+            
+            # Check if replying to the specific bot message with user ID
+            if message.reply_to_message.text and "(`" in message.reply_to_message.text:
+                match = re.search(r'\\(`(\\d+)`\\)', message.reply_to_message.text)
+                if match:
+                    user_id = int(match.group(1))
+            
+            # Or if replying directly to a forwarded message
+            elif message.reply_to_message.forward_origin:
+                origin = message.reply_to_message.forward_origin
+                if hasattr(origin, 'sender_user') and origin.sender_user:
+                    user_id = origin.sender_user.id
+            
+            if user_id:
                 try:
                     await bot.copy_message(
-                        chat_id=origin.sender_user.id,
+                        chat_id=user_id,
                         from_chat_id=message.chat.id,
                         message_id=message.message_id
                     )
                 except Exception as e:
                     await message.answer(f"❌ لم يتم الإرسال بسبب خطأ: {e}")
             else:
-                await message.answer("❌ لا يمكن الرد على هذه الرسالة لأن مرسلها غير معروف أو مخفي.")
+                await message.answer("❌ لا يمكن الرد على هذه الرسالة لأن مرسلها مخفي أو غير معروف. يرجى استخدام زر 'رد / Reply'.")
         else:
-            await message.answer("⚠️ يرجى الرد على رسالة المستخدم ليتم إرسال الرد له.")
+            await message.answer("⚠️ يرجى الرد على رسالة المستخدم أو استخدام زر الرد ليتم إرسال الرد له.")
         return
 
     # User sending a message
@@ -578,15 +604,24 @@ async def handle_messages(message: Message):
         user_info = f"👤 **From**: {message.from_user.full_name} (`{message.from_user.id}`)"
         if message.from_user.username: user_info += f" (@{message.from_user.username})"
         
-        log_header = f"📩 **Incoming Message**\\n🤖 **Bot**: @{me.username}\\n{user_info}"
-        
         if LOG_CHANNEL:
+            log_header = f"📩 **Incoming Message**\\n🤖 **Bot**: @{me.username}\\n{user_info}"
             try:
-                await bot.send_message(chat_id=LOG_CHANNEL, text=log_header, parse_mode="Markdown")
-                await bot.forward_message(chat_id=LOG_CHANNEL, from_chat_id=message.chat.id, message_id=message.message_id)
+                log_fwd = await bot.forward_message(chat_id=LOG_CHANNEL, from_chat_id=message.chat.id, message_id=message.message_id)
+                await bot.send_message(chat_id=LOG_CHANNEL, text=log_header, parse_mode="Markdown", reply_to_message_id=log_fwd.message_id)
             except: pass
             
-        await bot.forward_message(chat_id=OWNER_ID, from_chat_id=message.chat.id, message_id=message.message_id)
+        markup = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="💬 رد / Reply", callback_data=f"rep_{message.from_user.id}")]]
+        )
+        fwd_msg = await bot.forward_message(chat_id=OWNER_ID, from_chat_id=message.chat.id, message_id=message.message_id)
+        await bot.send_message(
+            chat_id=OWNER_ID, 
+            text=user_info, 
+            parse_mode="Markdown", 
+            reply_markup=markup,
+            reply_to_message_id=fwd_msg.message_id
+        )
     except Exception as e:
         logging.error(f"Forwarding error: {e}")
 
